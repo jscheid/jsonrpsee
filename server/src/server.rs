@@ -482,6 +482,26 @@ impl<B, L> Builder<B, L> {
 		})
 	}
 
+	/// Creates a new service factory, which can be used to create
+	/// [`tower::TowerService`] instances for use in custom servers.
+	///
+	pub fn service_factory(self, methods: impl Into<Methods>) -> Result<ServiceFactory<L>, Error> {
+		let resources = self.resources;
+		let methods = methods.into().initialize_resources(&resources)?;
+		let (_, stop_rx) = watch::channel(());
+		let stop_handle = StopHandle::new(stop_rx);
+
+		Ok(ServiceFactory {
+			methods,
+			resources,
+			logger: self.logger,
+			conn_id: 0,
+			settings: self.settings,
+			stop_handle,
+			id_provider: self.id_provider,
+		})
+	}
+
 	/// Finalizes the configuration of the server with customized TCP settings on the socket.
 	///
 	///
@@ -574,7 +594,7 @@ pub(crate) struct ServiceData<L: Logger> {
 	/// Logger.
 	pub(crate) logger: L,
 	/// Handle to hold a `connection permit`.
-	pub(crate) conn: Arc<OwnedSemaphorePermit>,
+	pub(crate) conn: Option<Arc<OwnedSemaphorePermit>>,
 	/// Enable HTTP.
 	pub(crate) enable_http: bool,
 	/// Enable WS.
@@ -826,7 +846,7 @@ fn process_connection<'a, L: Logger, B, U>(
 			max_subscriptions_per_connection: cfg.max_subscriptions_per_connection,
 			conn_id: cfg.conn_id,
 			logger: cfg.logger,
-			conn: Arc::new(conn),
+			conn: Some(Arc::new(conn)),
 			enable_http: cfg.enable_http,
 			enable_ws: cfg.enable_ws,
 		},
@@ -859,6 +879,48 @@ where
 		}
 		_ = stop_handle.shutdown() => {
 			conn.graceful_shutdown();
+		}
+	}
+}
+
+/// Used to create TowerService instances.
+#[derive(Debug)]
+pub struct ServiceFactory<L = ()> {
+	methods: Methods,
+	resources: Resources,
+	logger: L,
+	conn_id: u32,
+	settings: Settings,
+	stop_handle: StopHandle,
+	id_provider: Arc<dyn IdProvider>,
+}
+
+impl<L: Logger> ServiceFactory<L> {
+	/// Create a new TowerService that includes the given SocketAddr
+	/// in its log output.
+	pub fn service(&mut self, remote_addr: SocketAddr) -> TowerService<L> {
+		let conn_id = self.conn_id.wrapping_add(1);
+
+		TowerService {
+			inner: ServiceData {
+				remote_addr: remote_addr,
+				methods: self.methods.clone(),
+				allow_hosts: self.settings.allow_hosts.clone(),
+				resources: self.resources.clone(),
+				max_request_body_size: self.settings.max_request_body_size,
+				max_response_body_size: self.settings.max_response_body_size,
+				max_log_length: self.settings.max_log_length,
+				batch_requests_supported: self.settings.batch_requests_supported,
+				id_provider: self.id_provider.clone(),
+				ping_interval: self.settings.ping_interval,
+				stop_handle: self.stop_handle.clone(),
+				max_subscriptions_per_connection: self.settings.max_subscriptions_per_connection,
+				conn_id,
+				logger: self.logger.clone(),
+				conn: None,
+				enable_http: self.settings.enable_http,
+				enable_ws: self.settings.enable_ws,
+			},
 		}
 	}
 }

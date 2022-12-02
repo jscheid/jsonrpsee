@@ -294,7 +294,7 @@ pub(crate) struct HandleRequest<L: Logger> {
 	pub(crate) max_log_length: u32,
 	pub(crate) batch_requests_supported: bool,
 	pub(crate) logger: L,
-	pub(crate) conn: Arc<OwnedSemaphorePermit>,
+	pub(crate) conn: Option<Arc<OwnedSemaphorePermit>>,
 	pub(crate) remote_addr: SocketAddr,
 }
 
